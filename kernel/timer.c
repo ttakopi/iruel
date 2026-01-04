@@ -1,0 +1,50 @@
+#include "include/kernel.h"
+#include "include/process.h"
+
+#define PIT_CHANNEL0    0x40
+#define PIT_COMMAND     0x43
+
+#define PIT_FREQUENCY   1193182
+
+extern void schedule_tick(void);
+
+static volatile uint64_t timer_ticks = 0;
+
+static void timer_handler(void) {
+    timer_ticks++;
+    schedule_tick();
+}
+
+extern void irq_register_handler(int irq, void (*handler)(void));
+
+void timer_init(uint32_t frequency) {
+
+    uint32_t divisor = PIT_FREQUENCY / frequency;
+    if (divisor > 65535) divisor = 65535;
+    if (divisor < 1) divisor = 1;
+
+    outb(PIT_COMMAND, 0x36);
+
+    outb(PIT_CHANNEL0, divisor & 0xFF);
+    outb(PIT_CHANNEL0, (divisor >> 8) & 0xFF);
+
+    irq_register_handler(0, timer_handler);
+
+    kprintf("timer initialized at %d hz\n", frequency);
+}
+
+uint64_t timer_get_ticks(void) {
+    return timer_ticks;
+}
+
+void timer_sleep(uint64_t ticks) {
+    if (process_current()) {
+        process_sleep(ticks);
+        return;
+    }
+    uint64_t start = timer_ticks;
+    while (timer_ticks - start < ticks) {
+        sti();
+        hlt();
+    }
+}

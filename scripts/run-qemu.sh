@@ -1,0 +1,19 @@
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+KERNEL="$PROJECT_DIR/build/iruel.bin"
+
+if [ ! -f "$KERNEL" ]; then
+    echo "kernel not found. run 'make' first"
+    exit 1
+fi
+
+qemu-system-x86_64 \
+    -kernel "$KERNEL" \
+    -m 128M \
+    -serial stdio \
+    -display none \
+    -no-reboot \
+    -no-shutdown \
+    "$@"

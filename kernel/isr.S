@@ -1,0 +1,265 @@
+.section .text
+.code64
+
+.macro ISR_NOERR num
+.global isr\num
+isr\num:
+    pushq $0
+    pushq $\num
+    jmp isr_common
+.endm
+
+.macro ISR_ERR num
+.global isr\num
+isr\num:
+    pushq $\num
+    jmp isr_common
+.endm
+
+.macro IRQ num, int_num
+.global irq\num
+irq\num:
+    pushq $0
+    pushq $\int_num
+    jmp irq_common
+.endm
+
+ISR_NOERR 0
+ISR_NOERR 1
+ISR_NOERR 2
+ISR_NOERR 3
+ISR_NOERR 4
+ISR_NOERR 5
+ISR_NOERR 6
+ISR_NOERR 7
+ISR_ERR   8
+ISR_NOERR 9
+ISR_ERR   10
+ISR_ERR   11
+ISR_ERR   12
+ISR_ERR   13
+ISR_ERR   14
+ISR_NOERR 15
+ISR_NOERR 16
+ISR_ERR   17
+ISR_NOERR 18
+ISR_NOERR 19
+ISR_NOERR 20
+ISR_ERR   21
+ISR_NOERR 22
+ISR_NOERR 23
+ISR_NOERR 24
+ISR_NOERR 25
+ISR_NOERR 26
+ISR_NOERR 27
+ISR_NOERR 28
+ISR_NOERR 29
+ISR_ERR   30
+ISR_NOERR 31
+
+IRQ 0, 32
+IRQ 1, 33
+IRQ 2, 34
+IRQ 3, 35
+IRQ 4, 36
+IRQ 5, 37
+IRQ 6, 38
+IRQ 7, 39
+IRQ 8, 40
+IRQ 9, 41
+IRQ 10, 42
+IRQ 11, 43
+IRQ 12, 44
+IRQ 13, 45
+IRQ 14, 46
+IRQ 15, 47
+
+.global isr128
+isr128:
+    pushq $0
+    pushq $128
+    jmp syscall_entry
+
+isr_common:
+
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    mov %rsp, %rdi
+    call process_set_context
+
+    mov %rsp, %rdi
+    call exception_handler
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    add $16, %rsp
+
+    iretq
+
+irq_common:
+
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    mov %rsp, %rdi
+    call process_set_context
+
+    mov %rsp, %rdi
+    call irq_handler
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    add $16, %rsp
+
+    iretq
+
+syscall_entry:
+
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    mov %rsp, %rdi
+    call process_set_context
+
+    mov 0x70(%rsp), %rdi
+    mov 0x48(%rsp), %rsi
+    mov 0x50(%rsp), %rdx
+    mov 0x58(%rsp), %rcx
+    mov 0x28(%rsp), %r8
+    mov 0x38(%rsp), %r9
+    call syscall_handler
+    mov %rax, 0x70(%rsp)
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    add $16, %rsp
+
+    iretq
+
+.global context_switch
+context_switch:
+
+    pushq %rbp
+    pushq %rbx
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+    pushfq
+
+    mov %rsp, (%rdi)
+
+    mov %rsi, %rsp
+
+    popfq
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rbx
+    popq %rbp
+
+    ret
+
+.global switch_to
+switch_to:
+    mov %rdi, %rsp
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+    add $16, %rsp
+    iretq

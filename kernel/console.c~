@@ -1,0 +1,177 @@
+
+#include "include/kernel.h"
+#include "include/memory.h"
+#include "include/fs.h"
+
+#define CONSOLE_BUF_SIZE 256
+static char console_buffer[CONSOLE_BUF_SIZE];
+static int console_buf_start = 0;
+static int console_buf_end = 0;
+
+static const char scancode_ascii[] = {
+    0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
+    '*', 0, ' '
+};
+
+static const char scancode_ascii_shift[] = {
+    0, 27, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
+    '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
+    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
+    0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
+    '*', 0, ' '
+};
+
+static int shift_pressed = 0;
+
+static void serial_init(void) {
+    outb(0x3F8 + 1, 0x00);
+    outb(0x3F8 + 3, 0x80);
+    outb(0x3F8 + 0, 0x03);
+    outb(0x3F8 + 1, 0x00);
+    outb(0x3F8 + 3, 0x03);
+    outb(0x3F8 + 2, 0xC7);
+    outb(0x3F8 + 4, 0x0B);
+}
+
+static int serial_received(void) {
+    return inb(0x3F8 + 5) & 1;
+}
+
+static char serial_read(void) {
+    return (char)inb(0x3F8);
+}
+
+static void console_enqueue_char(char c) {
+    int next = (console_buf_end + 1) % CONSOLE_BUF_SIZE;
+    if (next != console_buf_start) {
+        console_buffer[console_buf_end] = c;
+        console_buf_end = next;
+    }
+}
+
+static void console_echo_char(char c) {
+    if (c == '\n') {
+        kprintf("\n");
+    } else if (c == '\b') {
+        kprintf("\b \b");
+    } else {
+        kprintf("%c", c);
+    }
+}
+
+void keyboard_handler(void) {
+    uint8_t scancode = inb(0x60);
+
+    if (scancode == 0x2A || scancode == 0x36) {
+        shift_pressed = 1;
+        return;
+    }
+    if (scancode == 0xAA || scancode == 0xB6) {
+        shift_pressed = 0;
+        return;
+    }
+
+    if (scancode & 0x80) {
+        return;
+    }
+
+    char c = 0;
+    if (scancode < sizeof(scancode_ascii)) {
+        c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
+    }
+
+    if (c) {
+        console_enqueue_char(c);
+        console_echo_char(c);
+    }
+}
+
+static int64_t console_read(file_t *f, void *buf, size_t count) {
+    (void)f;
+    char *p = (char *)buf;
+    size_t read = 0;
+
+    while (read < count) {
+
+        while (console_buf_start == console_buf_end) {
+            if (serial_received()) {
+                while (serial_received()) {
+                    char c = serial_read();
+                    if (c == '\r') {
+                        c = '\n';
+                    }
+                    console_enqueue_char(c);
+                    console_echo_char(c);
+                }
+                if (console_buf_start != console_buf_end) {
+                    break;
+                }
+            }
+            sti();
+            hlt();
+            cli();
+        }
+
+        char c = console_buffer[console_buf_start];
+        console_buf_start = (console_buf_start + 1) % CONSOLE_BUF_SIZE;
+
+        *p++ = c;
+        read++;
+
+        if (c == '\n') {
+            break;
+        }
+    }
+
+    return read;
+}
+
+static int64_t console_write(file_t *f, const void *buf, size_t count) {
+    (void)f;
+    const char *p = (const char *)buf;
+
+    for (size_t i = 0; i < count; i++) {
+        kprintf("%c", p[i]);
+    }
+
+    return count;
+}
+
+static const file_ops_t console_ops = {
+    .read = console_read,
+    .write = console_write,
+    .open = NULL,
+    .close = NULL,
+    .lseek = NULL,
+    .readdir = NULL,
+};
+
+static inode_t console_inode = {
+    .ino = 1,
+    .type = FT_CHARDEV,
+    .mode = 0666,
+    .uid = 0,
+    .gid = 0,
+    .size = 0,
+    .data = NULL,
+    .f_ops = &console_ops,
+    .i_ops = NULL,
+};
+
+extern void irq_register_handler(int irq, void (*handler)(void));
+
+void console_init(void) {
+    extern void console_clear(void);
+    console_clear();
+
+    serial_init();
+    irq_register_handler(1, keyboard_handler);
+
+}
+
+inode_t *console_get_inode(void) {
+    return &console_inode;
+}

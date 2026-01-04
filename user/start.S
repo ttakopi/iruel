@@ -1,0 +1,16 @@
+.section .text
+.global _start
+
+_start:
+
+    xor %rbp, %rbp
+
+    call main
+
+    mov %rax, %rdi
+    call exit
+
+1:
+    jmp 1b
+
+.size _start, . - _start

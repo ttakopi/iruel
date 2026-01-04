@@ -1,0 +1,96 @@
+
+#include "include/kernel.h"
+#include "include/memory.h"
+#include "include/process.h"
+
+extern process_t *process_current(void);
+
+extern process_t processes[];
+
+static int current_index = 0;
+static volatile uint64_t ticks = 0;
+static uint64_t time_slice_ticks = 10;
+
+extern void gdt_set_kernel_stack(uint64_t stack);
+extern void switch_to(cpu_context_t *ctx);
+
+void schedule_init(void) {
+    current_index = 0;
+    ticks = 0;
+}
+
+void schedule_tick(void) {
+    ticks++;
+
+    process_t *proc = process_current();
+    if (proc && proc->state == PROC_RUNNING) {
+        proc->time_slice++;
+        if (proc->time_slice >= time_slice_ticks) {
+            proc->time_slice = 0;
+            schedule_yield();
+        }
+    }
+}
+
+static process_t *find_next_process(void) {
+    int start = current_index;
+
+    do {
+        current_index = (current_index + 1) % MAX_PROCESSES;
+        if (processes[current_index].state == PROC_READY) {
+            return &processes[current_index];
+        }
+    } while (current_index != start);
+
+    if (processes[current_index].state == PROC_READY ||
+        processes[current_index].state == PROC_RUNNING) {
+        return &processes[current_index];
+    }
+
+    return NULL;
+}
+
+void schedule(void) {
+    cli();
+
+    process_t *prev = process_current();
+    process_t *next = find_next_process();
+
+    if (!next) {
+
+        sti();
+        hlt();
+        return;
+    }
+
+    if (prev == next) {
+        sti();
+        return;
+    }
+
+    if (prev && prev->state == PROC_RUNNING) {
+        prev->state = PROC_READY;
+    }
+    next->state = PROC_RUNNING;
+
+    extern process_t *current_process;
+    current_process = next;
+
+    paging_switch_address_space(next->page_table);
+
+    gdt_set_kernel_stack(next->kernel_stack);
+
+    switch_to(next->context);
+}
+
+void schedule_yield(void) {
+    process_t *proc = process_current();
+    if (proc) {
+        proc->time_slice = 0;
+    }
+    schedule();
+}
+
+uint64_t schedule_get_ticks(void) {
+    return ticks;
+}

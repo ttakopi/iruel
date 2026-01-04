@@ -1,0 +1,15 @@
+#include "include/kernel.h"
+
+void panic(const char *msg) {
+    cli();
+
+    kprintf("\n");
+    kprintf("*** KERNEL PANIC ***\n");
+    kprintf("%s\n", msg);
+    kprintf("\n");
+    kprintf("System halted.\n");
+
+    for (;;) {
+        hlt();
+    }
+}

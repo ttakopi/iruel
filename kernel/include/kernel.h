@@ -1,0 +1,95 @@
+#ifndef _KERNEL_H
+#define _KERNEL_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#define KERNEL_NAME     "iruel"
+#define KERNEL_VERSION  "0.1.0"
+#define KERNEL_RELEASE  "0.1.0-iruel"
+
+static inline void outb(uint16_t port, uint8_t val) {
+    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static inline void outw(uint16_t port, uint16_t val) {
+    __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    __asm__ volatile("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static inline void outl(uint16_t port, uint32_t val) {
+    __asm__ volatile("outl %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint32_t inl(uint16_t port) {
+    uint32_t ret;
+    __asm__ volatile("inl %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static inline void io_wait(void) {
+    outb(0x80, 0);
+}
+
+static inline void cli(void) {
+    __asm__ volatile("cli");
+}
+
+static inline void sti(void) {
+    __asm__ volatile("sti");
+}
+
+static inline void hlt(void) {
+    __asm__ volatile("hlt");
+}
+
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t val) {
+    uint32_t lo = val & 0xffffffff;
+    uint32_t hi = val >> 32;
+    __asm__ volatile("wrmsr" : : "a"(lo), "d"(hi), "c"(msr));
+}
+
+void kprintf(const char *fmt, ...);
+void kputs(const char *s);
+void console_init(void);
+
+void panic(const char *msg) __attribute__((noreturn));
+
+void gdt_init(void);
+void idt_init(void);
+int irq_from_user(void);
+
+void timer_init(uint32_t frequency);
+
+void physmem_init(uint64_t mem_upper);
+void paging_init(void);
+
+extern char __text_start[];
+extern char __text_end[];
+extern char __rodata_start[];
+extern char __rodata_end[];
+extern char __data_start[];
+extern char __data_end[];
+extern char __bss_start[];
+extern char __bss_end[];
+extern char __kernel_end[];
+
+#endif

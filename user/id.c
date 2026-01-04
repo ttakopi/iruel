@@ -1,0 +1,27 @@
+extern int printf(const char *fmt, ...);
+extern void exit(int status);
+extern int getuid(void);
+extern int getgid(void);
+
+int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
+
+    int uid = getuid();
+    int gid = getgid();
+
+    const char *username = "root";
+    const char *groupname = "root";
+
+    if (uid != 0) {
+        username = "user";
+    }
+    if (gid != 0) {
+        groupname = "users";
+    }
+
+    printf("uid=%d(%s) gid=%d(%s)\n", uid, username, gid, groupname);
+
+    exit(0);
+    return 0;
+}

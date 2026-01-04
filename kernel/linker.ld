@@ -1,0 +1,55 @@
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 1M;
+
+    .multiboot ALIGN(8) :
+    {
+        *(.multiboot)
+    }
+
+    .text ALIGN(4K) :
+    {
+        __text_start = .;
+        *(.text .text.*)
+        __text_end = .;
+    }
+
+    .rodata ALIGN(4K) :
+    {
+        __rodata_start = .;
+        *(.rodata .rodata.*)
+        __rodata_end = .;
+    }
+
+    .data ALIGN(4K) :
+    {
+        __data_start = .;
+        *(.data .data.*)
+        __data_end = .;
+    }
+
+    .bss ALIGN(4K) :
+    {
+        __bss_start = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        __bss_end = .;
+    }
+
+    __kernel_end = .;
+
+    .note.Xen ALIGN(4) :
+    {
+        *(.note.Xen)
+    }
+
+    /DISCARD/ :
+    {
+        *(.comment)
+        *(.note.gnu*)
+        *(.note.GNU*)
+        *(.eh_frame*)
+    }
+}

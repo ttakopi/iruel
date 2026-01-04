@@ -1,0 +1,5 @@
+# iruel init configuration
+# This file is parsed by init on startup
+
+# Start shell
+exec /bin/sh

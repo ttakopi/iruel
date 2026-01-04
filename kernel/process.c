@@ -1,0 +1,489 @@
+#include "include/kernel.h"
+#include "include/memory.h"
+#include "include/process.h"
+#include "include/fs.h"
+#include "include/errno.h"
+
+process_t processes[MAX_PROCESSES];
+process_t *current_process = NULL;
+static int next_pid = 1;
+
+extern void gdt_set_kernel_stack(uint64_t stack);
+
+#define KERNEL_STACK_PAGES 4
+
+static char *strncpy(char *dest, const char *src, size_t n) {
+    size_t i;
+    for (i = 0; i < n && src[i]; i++) {
+        dest[i] = src[i];
+    }
+    for (; i < n; i++) {
+        dest[i] = '\0';
+    }
+    return dest;
+}
+
+static size_t strlen(const char *s) {
+    size_t len = 0;
+    while (s && *s++) {
+        len++;
+    }
+    return len;
+}
+
+void process_init(void) {
+    memset(processes, 0, sizeof(processes));
+    current_process = NULL;
+    next_pid = 1;
+}
+
+process_t *process_current(void) {
+    return current_process;
+}
+
+void process_set_context(cpu_context_t *ctx) {
+    if (current_process && ctx && (ctx->cs & 3) == 3) {
+        current_process->context = ctx;
+    }
+}
+
+process_t *process_get(int pid) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (processes[i].state != PROC_UNUSED && processes[i].pid == pid) {
+            return &processes[i];
+        }
+    }
+    return NULL;
+}
+
+static process_t *alloc_process(void) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (processes[i].state == PROC_UNUSED) {
+            return &processes[i];
+        }
+    }
+    return NULL;
+}
+
+process_t *process_create(const char *name) {
+    process_t *proc = alloc_process();
+    if (!proc) {
+        return NULL;
+    }
+
+    memset(proc, 0, sizeof(process_t));
+
+    proc->pid = next_pid++;
+    proc->ppid = current_process ? current_process->pid : 0;
+    proc->uid = 0;
+    proc->gid = 0;
+    proc->state = PROC_CREATED;
+
+    proc->page_table = paging_create_address_space();
+    if (!proc->page_table) {
+        proc->state = PROC_UNUSED;
+        return NULL;
+    }
+
+    void *kstack = physmem_alloc_pages(KERNEL_STACK_PAGES);
+    if (!kstack) {
+        paging_destroy_address_space(proc->page_table);
+        proc->state = PROC_UNUSED;
+        return NULL;
+    }
+    proc->kernel_stack = (uint64_t)kstack + PAGE_SIZE * KERNEL_STACK_PAGES;
+
+    proc->stack_top = USER_STACK_TOP;
+
+    strncpy(proc->name, name, sizeof(proc->name) - 1);
+
+    extern inode_t *console_get_inode(void);
+    inode_t *console = console_get_inode();
+    for (int i = 0; i < 3; i++) {
+        file_t *f = physmem_alloc_page();
+        if (f) {
+            memset(f, 0, sizeof(file_t));
+            f->inode = console;
+            f->offset = 0;
+            f->flags = (i == 0) ? O_RDONLY : O_WRONLY;
+            f->refcount = 1;
+            f->ops = console->f_ops;
+            proc->fds[i].file = f;
+            proc->fds[i].flags = f->flags;
+        }
+    }
+
+    proc->state = PROC_READY;
+    schedule_make_ready(proc);
+    return proc;
+}
+
+#define ELF_MAGIC 0x464C457F
+
+typedef struct {
+    uint32_t magic;
+    uint8_t class;
+    uint8_t endian;
+    uint8_t version;
+    uint8_t osabi;
+    uint8_t abiversion;
+    uint8_t pad[7];
+    uint16_t type;
+    uint16_t machine;
+    uint32_t version2;
+    uint64_t entry;
+    uint64_t phoff;
+    uint64_t shoff;
+    uint32_t flags;
+    uint16_t ehsize;
+    uint16_t phentsize;
+    uint16_t phnum;
+    uint16_t shentsize;
+    uint16_t shnum;
+    uint16_t shstrndx;
+} __attribute__((packed)) elf64_header_t;
+
+typedef struct {
+    uint32_t type;
+    uint32_t flags;
+    uint64_t offset;
+    uint64_t vaddr;
+    uint64_t paddr;
+    uint64_t filesz;
+    uint64_t memsz;
+    uint64_t align;
+} __attribute__((packed)) elf64_phdr_t;
+
+#define PT_LOAD 1
+#define PF_X 0x1
+#define PF_W 0x2
+#define PF_R 0x4
+
+int process_exec(const char *path, char *const argv[], char *const envp[]) {
+    process_t *proc = current_process;
+    if (!proc) {
+        proc = process_create("init");
+        if (!proc) {
+            return -ENOMEM;
+        }
+        current_process = proc;
+    }
+
+    file_t *file = vfs_open(path, O_RDONLY);
+    if (!file) {
+        return -ENOENT;
+    }
+
+    size_t file_size = file->inode->size;
+    if (file_size < sizeof(elf64_header_t)) {
+        vfs_close(file);
+        return -ENOEXEC;
+    }
+
+    size_t pages = PAGE_ALIGN_UP(file_size) / PAGE_SIZE;
+    void *file_data = physmem_alloc_pages(pages);
+    if (!file_data) {
+        vfs_close(file);
+        return -ENOMEM;
+    }
+
+    size_t total_read = 0;
+    while (total_read < file_size) {
+        int64_t bytes_read = vfs_read(file, (uint8_t *)file_data + total_read,
+                                      file_size - total_read);
+        if (bytes_read < 0) {
+            physmem_free_pages(file_data, pages);
+            vfs_close(file);
+            return (int)bytes_read;
+        }
+        if (bytes_read == 0) {
+            break;
+        }
+        total_read += (size_t)bytes_read;
+    }
+    vfs_close(file);
+
+    if (total_read < sizeof(elf64_header_t)) {
+        physmem_free_pages(file_data, pages);
+        return -ENOEXEC;
+    }
+
+    elf64_header_t *ehdr = (elf64_header_t *)file_data;
+    if (ehdr->magic != ELF_MAGIC || ehdr->class != 2 || ehdr->machine != 0x3E) {
+        physmem_free_pages(file_data, pages);
+        return -ENOEXEC;
+    }
+
+    if (ehdr->phoff + (uint64_t)ehdr->phnum * sizeof(elf64_phdr_t) > total_read) {
+        physmem_free_pages(file_data, pages);
+        return -ENOEXEC;
+    }
+
+    uint64_t entry_point = ehdr->entry;
+    elf64_phdr_t *phdr = (elf64_phdr_t *)((uint8_t *)file_data + ehdr->phoff);
+
+    for (int i = 0; i < ehdr->phnum; i++) {
+        if (phdr[i].type == PT_LOAD) {
+            uint64_t vaddr = phdr[i].vaddr;
+            uint64_t memsz = phdr[i].memsz;
+
+            for (uint64_t addr = PAGE_ALIGN_DOWN(vaddr);
+                 addr < PAGE_ALIGN_UP(vaddr + memsz);
+                 addr += PAGE_SIZE) {
+                void *page = physmem_alloc_page();
+                if (!page) {
+                    physmem_free_pages(file_data, pages);
+                    return -ENOMEM;
+                }
+                uint64_t flags = PTE_USER;
+                if (phdr[i].flags & PF_W) flags |= PTE_WRITABLE;
+                paging_map_page_in_space(proc->page_table, addr, (uint64_t)page, flags);
+            }
+        }
+    }
+
+    #define STACK_PAGES 16
+    for (int i = 0; i < STACK_PAGES; i++) {
+        void *stack_page = physmem_alloc_page();
+        if (!stack_page) {
+            physmem_free_pages(file_data, pages);
+            return -ENOMEM;
+        }
+        uint64_t vaddr = USER_STACK_TOP - PAGE_SIZE * (i + 1);
+        paging_map_page_in_space(proc->page_table, vaddr, (uint64_t)stack_page,
+                                 PTE_USER | PTE_WRITABLE);
+    }
+
+    paging_switch_address_space(proc->page_table);
+
+    for (int i = 0; i < ehdr->phnum; i++) {
+        if (phdr[i].type == PT_LOAD) {
+            uint64_t vaddr = phdr[i].vaddr;
+            uint64_t memsz = phdr[i].memsz;
+            uint64_t filesz = phdr[i].filesz;
+            uint64_t offset = phdr[i].offset;
+
+            if (filesz > 0) {
+                memcpy((void *)vaddr, (uint8_t *)file_data + offset, filesz);
+            }
+
+            if (memsz > filesz) {
+                memset((void *)(vaddr + filesz), 0, memsz - filesz);
+            }
+        }
+    }
+
+    #define MAX_USER_ARGS 64
+    #define MAX_USER_ENVS 64
+    char *argv_ptrs[MAX_USER_ARGS + 1];
+    char *envp_ptrs[MAX_USER_ENVS + 1];
+    size_t argc = 0;
+    size_t envc = 0;
+
+    if (argv) {
+        while (argv[argc]) {
+            if (argc >= MAX_USER_ARGS) {
+                physmem_free_pages(file_data, pages);
+                return -E2BIG;
+            }
+            argc++;
+        }
+    }
+    if (envp) {
+        while (envp[envc]) {
+            if (envc >= MAX_USER_ENVS) {
+                physmem_free_pages(file_data, pages);
+                return -E2BIG;
+            }
+            envc++;
+        }
+    }
+
+    uint64_t sp = USER_STACK_TOP;
+    for (size_t i = envc; i > 0; i--) {
+        size_t len = strlen(envp[i - 1]) + 1;
+        sp -= len;
+        memcpy((void *)sp, envp[i - 1], len);
+        envp_ptrs[i - 1] = (char *)sp;
+    }
+    envp_ptrs[envc] = NULL;
+    for (size_t i = argc; i > 0; i--) {
+        size_t len = strlen(argv[i - 1]) + 1;
+        sp -= len;
+        memcpy((void *)sp, argv[i - 1], len);
+        argv_ptrs[i - 1] = (char *)sp;
+    }
+    argv_ptrs[argc] = NULL;
+
+    sp -= (envc + 1) * sizeof(uint64_t);
+    uint64_t envp_addr = sp;
+    memcpy((void *)envp_addr, envp_ptrs, (envc + 1) * sizeof(uint64_t));
+
+    sp -= (argc + 1) * sizeof(uint64_t);
+    uint64_t argv_addr = sp;
+    memcpy((void *)argv_addr, argv_ptrs, (argc + 1) * sizeof(uint64_t));
+
+    sp &= ~0xFULL;
+    if (sp < USER_STACK_TOP - STACK_PAGES * PAGE_SIZE) {
+        physmem_free_pages(file_data, pages);
+        return -E2BIG;
+    }
+
+    physmem_free_pages(file_data, pages);
+
+    uint64_t kstack_top = proc->kernel_stack;
+    cpu_context_t *ctx = (cpu_context_t *)(kstack_top - sizeof(cpu_context_t));
+    memset(ctx, 0, sizeof(cpu_context_t));
+
+    ctx->rip = entry_point;
+    ctx->cs = 0x18 | 3;
+    ctx->rflags = 0x202;
+    ctx->rsp = sp;
+    ctx->ss = 0x20 | 3;
+
+    ctx->rdi = argc;
+    ctx->rsi = argv_addr;
+    ctx->rdx = envp_addr;
+
+    proc->context = ctx;
+    proc->state = PROC_RUNNING;
+    proc->heap_start = USER_HEAP_START;
+    proc->heap_end = USER_HEAP_START;
+
+    gdt_set_kernel_stack(proc->kernel_stack);
+
+    __asm__ volatile(
+        "mov %0, %%rsp\n"
+        "pop %%r15\n"
+        "pop %%r14\n"
+        "pop %%r13\n"
+        "pop %%r12\n"
+        "pop %%r11\n"
+        "pop %%r10\n"
+        "pop %%r9\n"
+        "pop %%r8\n"
+        "pop %%rbp\n"
+        "pop %%rdi\n"
+        "pop %%rsi\n"
+        "pop %%rdx\n"
+        "pop %%rcx\n"
+        "pop %%rbx\n"
+        "pop %%rax\n"
+        "add $16, %%rsp\n"
+        "iretq\n"
+        :
+        : "r"(ctx)
+        : "memory"
+    );
+
+    return 0;
+}
+
+int process_fork(void) {
+    process_t *parent = current_process;
+    if (!parent) {
+        return -1;
+    }
+
+    if (!parent->context) {
+        return -EFAULT;
+    }
+
+    process_t *child = alloc_process();
+    if (!child) {
+        return -ENOMEM;
+    }
+
+    memset(child, 0, sizeof(process_t));
+    child->pid = next_pid++;
+    child->ppid = parent->pid;
+    child->uid = parent->uid;
+    child->gid = parent->gid;
+    child->state = PROC_CREATED;
+    child->stack_top = parent->stack_top;
+    child->heap_start = parent->heap_start;
+    child->heap_end = parent->heap_end;
+    strncpy(child->name, parent->name, sizeof(child->name) - 1);
+
+    child->page_table = paging_clone_address_space(parent->page_table);
+    if (!child->page_table) {
+        child->state = PROC_UNUSED;
+        return -ENOMEM;
+    }
+
+    void *kstack = physmem_alloc_pages(KERNEL_STACK_PAGES);
+    if (!kstack) {
+        paging_destroy_address_space(child->page_table);
+        child->state = PROC_UNUSED;
+        return -ENOMEM;
+    }
+    child->kernel_stack = (uint64_t)kstack + PAGE_SIZE * KERNEL_STACK_PAGES;
+
+    cpu_context_t *child_ctx = (cpu_context_t *)(child->kernel_stack - sizeof(cpu_context_t));
+    memcpy(child_ctx, parent->context, sizeof(cpu_context_t));
+    child_ctx->rax = 0;
+    child->context = child_ctx;
+
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (parent->fds[i].file) {
+            child->fds[i].file = parent->fds[i].file;
+            child->fds[i].flags = parent->fds[i].flags;
+            parent->fds[i].file->refcount++;
+        }
+    }
+
+    child->state = PROC_READY;
+    schedule_make_ready(child);
+    return child->pid;
+}
+
+void process_exit(int status) {
+    process_t *proc = current_process;
+    if (!proc) {
+        panic("No current process to exit");
+    }
+
+    (void)status;
+
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (proc->fds[i].file) {
+            vfs_close(proc->fds[i].file);
+            proc->fds[i].file = NULL;
+        }
+    }
+
+    proc->state = PROC_ZOMBIE;
+
+    process_t *parent = process_get(proc->ppid);
+    if (parent && parent->state == PROC_BLOCKED && parent->wait_type == WAIT_CHILD) {
+        if (parent->wait_pid == -1 || parent->wait_pid == proc->pid) {
+            parent->wait_type = WAIT_NONE;
+            parent->wait_pid = 0;
+            parent->state = PROC_READY;
+            schedule_make_ready(parent);
+        }
+    }
+
+    schedule();
+
+    for (;;) {
+        hlt();
+    }
+}
+
+int process_getpid(void) {
+    return current_process ? current_process->pid : 0;
+}
+
+int process_getppid(void) {
+    return current_process ? current_process->ppid : 0;
+}
+
+void process_sleep(uint64_t ticks) {
+    process_t *proc = current_process;
+    if (!proc) return;
+    proc->wake_tick = schedule_get_ticks() + ticks;
+    proc->wait_type = WAIT_SLEEP;
+    proc->state = PROC_BLOCKED;
+    schedule();
+}

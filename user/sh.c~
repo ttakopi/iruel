@@ -1,0 +1,185 @@
+
+#include <stdint.h>
+
+extern int printf(const char *fmt, ...);
+extern int puts(const char *s);
+extern void exit(int status);
+extern int fork(void);
+extern int execve(const char *path, char *const argv[], char *const envp[]);
+extern int waitpid(int pid, int *status, int options);
+extern char *gets(char *buf, int size);
+extern int strcmp(const char *s1, const char *s2);
+extern int strncmp(const char *s1, const char *s2, unsigned long n);
+extern unsigned long strlen(const char *s);
+extern char *strcpy(char *dest, const char *src);
+extern void *memset(void *s, int c, unsigned long n);
+extern int64_t write(int fd, const void *buf, unsigned long count);
+extern int uname(void *buf);
+extern int getuid(void);
+extern int getgid(void);
+
+#define MAX_LINE 256
+#define MAX_ARGS 16
+
+struct utsname {
+    char sysname[65];
+    char nodename[65];
+    char release[65];
+    char version[65];
+    char machine[65];
+};
+
+static int parse_line(char *line, char *argv[]) {
+    int argc = 0;
+
+    while (*line && argc < MAX_ARGS - 1) {
+
+        while (*line == ' ' || *line == '\t') {
+            line++;
+        }
+
+        if (*line == '\0') break;
+
+        argv[argc++] = line;
+
+        while (*line && *line != ' ' && *line != '\t') {
+            line++;
+        }
+
+        if (*line) {
+            *line++ = '\0';
+        }
+    }
+
+    argv[argc] = 0;
+    return argc;
+}
+
+static int builtin_exit(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
+    exit(0);
+    return 0;
+}
+
+static int builtin_help(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
+    puts("iruel shell");
+    puts("Built-in commands:");
+    puts("  exit    - Exit the shell");
+    puts("  help    - Show this help");
+    puts("");
+    puts("External commands:");
+    puts("  uname   - Print system information");
+    puts("  id      - Print user/group IDs");
+    return 0;
+}
+
+static int builtin_uname(int argc, char *argv[]) {
+    struct utsname uts;
+    if (uname(&uts) < 0) {
+        puts("uname: system call failed");
+        return 1;
+    }
+
+    int all = 0;
+    if (argc > 1 && strcmp(argv[1], "-a") == 0) {
+        all = 1;
+    }
+
+    if (all) {
+        printf("%s %s %s %s %s\n",
+               uts.sysname, uts.nodename, uts.release, uts.version, uts.machine);
+    } else {
+        puts(uts.sysname);
+    }
+
+    return 0;
+}
+
+static int builtin_id(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
+
+    int uid = getuid();
+    int gid = getgid();
+
+    const char *username = uid == 0 ? "root" : "user";
+    const char *groupname = gid == 0 ? "root" : "users";
+
+    printf("uid=%d(%s) gid=%d(%s)\n", uid, username, gid, groupname);
+    return 0;
+}
+
+static int execute(int argc, char *argv[]) {
+    if (argc == 0) return 0;
+
+    if (strcmp(argv[0], "exit") == 0) {
+        return builtin_exit(argc, argv);
+    }
+    if (strcmp(argv[0], "help") == 0) {
+        return builtin_help(argc, argv);
+    }
+    if (strcmp(argv[0], "uname") == 0) {
+        return builtin_uname(argc, argv);
+    }
+    if (strcmp(argv[0], "id") == 0) {
+        return builtin_id(argc, argv);
+    }
+
+    char path[MAX_LINE];
+    if (argv[0][0] == '/') {
+        strcpy(path, argv[0]);
+    } else {
+        strcpy(path, "/bin/");
+        strcpy(path + 5, argv[0]);
+    }
+
+    int pid = fork();
+    if (pid < 0) {
+        puts("sh: fork failed");
+        return -1;
+    }
+
+    if (pid == 0) {
+
+        execve(path, argv, 0);
+        printf("sh: %s: command not found\n", argv[0]);
+        exit(127);
+    }
+
+    int status;
+    waitpid(pid, &status, 0);
+    return status;
+}
+
+int main(int argc, char *argv[], char *envp[]) {
+    (void)argc;
+    (void)argv;
+    (void)envp;
+
+    char line[MAX_LINE];
+    char *args[MAX_ARGS];
+
+    puts("iruel shell v0.1");
+    puts("Type 'help' for available commands.\n");
+
+    while (1) {
+
+        write(1, "# ", 2);
+
+        if (gets(line, MAX_LINE) == 0) {
+            break;
+        }
+
+        int nargs = parse_line(line, args);
+        if (nargs > 0) {
+            execute(nargs, args);
+        }
+    }
+
+    puts("exit");
+    exit(0);
+    return 0;
+}
