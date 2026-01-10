@@ -169,22 +169,73 @@ int process_exec(const char *path, char *const argv[], char *const envp[]) {
         current_process = proc;
     }
 
+    #define MAX_USER_ARGS 64
+    #define MAX_USER_ENVS 64
+    #define MAX_ARG_STRLEN 256
+    char *saved_argv[MAX_USER_ARGS + 1];
+    char *saved_envp[MAX_USER_ENVS + 1];
+    size_t argc = 0;
+    size_t envc = 0;
+    int ret = -ENOEXEC;
+
+    if (argv) {
+        while (argv[argc] && argc < MAX_USER_ARGS) {
+            size_t len = strlen(argv[argc]);
+            if (len >= MAX_ARG_STRLEN) return -E2BIG;
+            saved_argv[argc] = physmem_alloc_page();
+            if (!saved_argv[argc]) {
+                for (size_t j = 0; j < argc; j++) {
+                    physmem_free_page(saved_argv[j]);
+                }
+                return -ENOMEM;
+            }
+            memcpy(saved_argv[argc], argv[argc], len + 1);
+            argc++;
+        }
+    }
+    saved_argv[argc] = NULL;
+
+    if (envp) {
+        while (envp[envc] && envc < MAX_USER_ENVS) {
+            size_t len = strlen(envp[envc]);
+            if (len >= MAX_ARG_STRLEN) {
+                for (size_t j = 0; j < argc; j++) {
+                    physmem_free_page(saved_argv[j]);
+                }
+                return -E2BIG;
+            }
+            saved_envp[envc] = physmem_alloc_page();
+            if (!saved_envp[envc]) {
+                for (size_t j = 0; j < argc; j++) {
+                    physmem_free_page(saved_argv[j]);
+                }
+                for (size_t j = 0; j < envc; j++) {
+                    physmem_free_page(saved_envp[j]);
+                }
+                return -ENOMEM;
+            }
+            memcpy(saved_envp[envc], envp[envc], len + 1);
+            envc++;
+        }
+    }
+    saved_envp[envc] = NULL;
+
     file_t *file = vfs_open(path, O_RDONLY);
     if (!file) {
-        return -ENOENT;
+        goto cleanup_saved;
     }
 
     size_t file_size = file->inode->size;
     if (file_size < sizeof(elf64_header_t)) {
         vfs_close(file);
-        return -ENOEXEC;
+        goto cleanup_saved;
     }
 
     size_t pages = PAGE_ALIGN_UP(file_size) / PAGE_SIZE;
     void *file_data = physmem_alloc_pages(pages);
     if (!file_data) {
         vfs_close(file);
-        return -ENOMEM;
+        goto cleanup_saved;
     }
 
     size_t total_read = 0;
@@ -194,7 +245,8 @@ int process_exec(const char *path, char *const argv[], char *const envp[]) {
         if (bytes_read < 0) {
             physmem_free_pages(file_data, pages);
             vfs_close(file);
-            return (int)bytes_read;
+            ret = (int)bytes_read;
+            goto cleanup_saved;
         }
         if (bytes_read == 0) {
             break;
@@ -205,18 +257,18 @@ int process_exec(const char *path, char *const argv[], char *const envp[]) {
 
     if (total_read < sizeof(elf64_header_t)) {
         physmem_free_pages(file_data, pages);
-        return -ENOEXEC;
+        goto cleanup_saved;
     }
 
     elf64_header_t *ehdr = (elf64_header_t *)file_data;
     if (ehdr->magic != ELF_MAGIC || ehdr->class != 2 || ehdr->machine != 0x3E) {
         physmem_free_pages(file_data, pages);
-        return -ENOEXEC;
+        goto cleanup_saved;
     }
 
     if (ehdr->phoff + (uint64_t)ehdr->phnum * sizeof(elf64_phdr_t) > total_read) {
         physmem_free_pages(file_data, pages);
-        return -ENOEXEC;
+        goto cleanup_saved;
     }
 
     uint64_t entry_point = ehdr->entry;
@@ -233,7 +285,8 @@ int process_exec(const char *path, char *const argv[], char *const envp[]) {
                 void *page = physmem_alloc_page();
                 if (!page) {
                     physmem_free_pages(file_data, pages);
-                    return -ENOMEM;
+                    ret = -ENOMEM;
+                    goto cleanup_saved;
                 }
                 uint64_t flags = PTE_USER;
                 if (phdr[i].flags & PF_W) flags |= PTE_WRITABLE;
@@ -247,7 +300,8 @@ int process_exec(const char *path, char *const argv[], char *const envp[]) {
         void *stack_page = physmem_alloc_page();
         if (!stack_page) {
             physmem_free_pages(file_data, pages);
-            return -ENOMEM;
+            ret = -ENOMEM;
+            goto cleanup_saved;
         }
         uint64_t vaddr = USER_STACK_TOP - PAGE_SIZE * (i + 1);
         paging_map_page_in_space(proc->page_table, vaddr, (uint64_t)stack_page,
@@ -273,44 +327,21 @@ int process_exec(const char *path, char *const argv[], char *const envp[]) {
         }
     }
 
-    #define MAX_USER_ARGS 64
-    #define MAX_USER_ENVS 64
     char *argv_ptrs[MAX_USER_ARGS + 1];
     char *envp_ptrs[MAX_USER_ENVS + 1];
-    size_t argc = 0;
-    size_t envc = 0;
-
-    if (argv) {
-        while (argv[argc]) {
-            if (argc >= MAX_USER_ARGS) {
-                physmem_free_pages(file_data, pages);
-                return -E2BIG;
-            }
-            argc++;
-        }
-    }
-    if (envp) {
-        while (envp[envc]) {
-            if (envc >= MAX_USER_ENVS) {
-                physmem_free_pages(file_data, pages);
-                return -E2BIG;
-            }
-            envc++;
-        }
-    }
 
     uint64_t sp = USER_STACK_TOP;
     for (size_t i = envc; i > 0; i--) {
-        size_t len = strlen(envp[i - 1]) + 1;
+        size_t len = strlen(saved_envp[i - 1]) + 1;
         sp -= len;
-        memcpy((void *)sp, envp[i - 1], len);
+        memcpy((void *)sp, saved_envp[i - 1], len);
         envp_ptrs[i - 1] = (char *)sp;
     }
     envp_ptrs[envc] = NULL;
     for (size_t i = argc; i > 0; i--) {
-        size_t len = strlen(argv[i - 1]) + 1;
+        size_t len = strlen(saved_argv[i - 1]) + 1;
         sp -= len;
-        memcpy((void *)sp, argv[i - 1], len);
+        memcpy((void *)sp, saved_argv[i - 1], len);
         argv_ptrs[i - 1] = (char *)sp;
     }
     argv_ptrs[argc] = NULL;
@@ -326,10 +357,18 @@ int process_exec(const char *path, char *const argv[], char *const envp[]) {
     sp &= ~0xFULL;
     if (sp < USER_STACK_TOP - STACK_PAGES * PAGE_SIZE) {
         physmem_free_pages(file_data, pages);
-        return -E2BIG;
+        ret = -E2BIG;
+        goto cleanup_saved;
     }
 
     physmem_free_pages(file_data, pages);
+
+    for (size_t i = 0; i < argc; i++) {
+        physmem_free_page(saved_argv[i]);
+    }
+    for (size_t i = 0; i < envc; i++) {
+        physmem_free_page(saved_envp[i]);
+    }
 
     uint64_t kstack_top = proc->kernel_stack;
     cpu_context_t *ctx = (cpu_context_t *)(kstack_top - sizeof(cpu_context_t));
@@ -377,6 +416,15 @@ int process_exec(const char *path, char *const argv[], char *const envp[]) {
     );
 
     return 0;
+
+cleanup_saved:
+    for (size_t i = 0; i < argc; i++) {
+        if (saved_argv[i]) physmem_free_page(saved_argv[i]);
+    }
+    for (size_t i = 0; i < envc; i++) {
+        if (saved_envp[i]) physmem_free_page(saved_envp[i]);
+    }
+    return ret;
 }
 
 int process_fork(void) {
