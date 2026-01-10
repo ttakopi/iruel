@@ -21,8 +21,11 @@
 #define SYS_PIPE        14
 #define SYS_DUP2        15
 #define SYS_READDIR     16
+#define SYS_CHMOD       17
+#define SYS_MMAP        18
+#define SYS_MUNMAP      19
 
-#define SYSCALL_MAX     17
+#define SYSCALL_MAX     20
 
 struct dirent;
 
@@ -56,5 +59,8 @@ int sys_waitpid(int pid, int *status, int options);
 int sys_pipe(int fds[2]);
 int sys_dup2(int oldfd, int newfd);
 int sys_readdir(int fd, struct dirent *dent);
+int sys_chmod(const char *path, uint32_t mode);
+void *sys_mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset);
+int sys_munmap(void *addr, size_t length);
 
 #endif

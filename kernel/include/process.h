@@ -37,6 +37,16 @@ typedef struct {
     int flags;
 } fd_entry_t;
 
+typedef struct mmap_region {
+    uint64_t start;
+    uint64_t end;
+    int prot;
+    int flags;
+    struct file *file;
+    uint64_t file_offset;
+    struct mmap_region *next;
+} mmap_region_t;
+
 typedef struct process {
     int pid;
     int ppid;
@@ -67,6 +77,8 @@ typedef struct process {
     uint64_t wake_tick;
 
     char name[32];
+    
+    struct mmap_region *mmap_regions;
 } process_t;
 
 void process_init(void);

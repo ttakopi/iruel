@@ -381,6 +381,139 @@ static int64_t wrap_readdir(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, 
     return sys_readdir((int)a1, (struct dirent *)a2);
 }
 
+int sys_chmod(const char *path, uint32_t mode) {
+    if (!path) return -EFAULT;
+    return vfs_chmod(path, mode);
+}
+
+static int64_t wrap_chmod(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    return sys_chmod((const char *)a1, (uint32_t)a2);
+}
+
+void *sys_mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
+    process_t *proc = process_current();
+    if (!proc) return (void *)-ESRCH;
+
+    if (length == 0) return (void *)-EINVAL;
+    if (length > 0x100000000UL) return (void *)-EINVAL;
+
+    length = PAGE_ALIGN_UP(length);
+
+    uint64_t start;
+    if (flags & MAP_FIXED) {
+        if (!addr || ((uint64_t)addr & (PAGE_SIZE - 1))) {
+            return (void *)-EINVAL;
+        }
+        start = (uint64_t)addr;
+    } else {
+        start = USER_MMAP_START;
+        mmap_region_t *region = proc->mmap_regions;
+        while (region) {
+            if (start + length <= region->start) {
+                break;
+            }
+            start = PAGE_ALIGN_UP(region->end);
+            region = region->next;
+        }
+        if (start + length >= USER_MMAP_END) {
+            return (void *)-ENOMEM;
+        }
+    }
+
+    file_t *file = NULL;
+    if (!(flags & MAP_ANONYMOUS)) {
+        if (fd < 0 || fd >= MAX_FDS || !proc->fds[fd].file) {
+            return (void *)-EBADF;
+        }
+        file = proc->fds[fd].file;
+    }
+
+    uint64_t page_flags = PTE_USER;
+    if (prot & PROT_WRITE) page_flags |= PTE_WRITABLE;
+
+    for (uint64_t page = start; page < start + length; page += PAGE_SIZE) {
+        void *phys = physmem_alloc_page();
+        if (!phys) {
+            for (uint64_t p = start; p < page; p += PAGE_SIZE) {
+                uint64_t phys_addr = paging_get_phys(p);
+                if (phys_addr) {
+                    physmem_free_page((void *)phys_addr);
+                }
+            }
+            return (void *)-ENOMEM;
+        }
+        memset(phys, 0, PAGE_SIZE);
+        paging_map_page_in_space(proc->page_table, page, (uint64_t)phys, page_flags);
+    }
+
+    mmap_region_t *new_region = physmem_alloc_page();
+    if (!new_region) {
+        for (uint64_t page = start; page < start + length; page += PAGE_SIZE) {
+            uint64_t phys = paging_get_phys(page);
+            if (phys) {
+                physmem_free_page((void *)phys);
+            }
+        }
+        return (void *)-ENOMEM;
+    }
+
+    new_region->start = start;
+    new_region->end = start + length;
+    new_region->prot = prot;
+    new_region->flags = flags;
+    new_region->file = file;
+    new_region->file_offset = offset;
+    new_region->next = proc->mmap_regions;
+    proc->mmap_regions = new_region;
+
+    return (void *)start;
+}
+
+static int64_t wrap_mmap(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    return (int64_t)sys_mmap((void *)a1, (size_t)a2, (int)a3, (int)a4, (int)a5, 0);
+}
+
+int sys_munmap(void *addr, size_t length) {
+    process_t *proc = process_current();
+    if (!proc) return -ESRCH;
+
+    if (!addr || ((uint64_t)addr & (PAGE_SIZE - 1))) {
+        return -EINVAL;
+    }
+
+    uint64_t start = (uint64_t)addr;
+    uint64_t end = start + PAGE_ALIGN_UP(length);
+
+    mmap_region_t **prev_ptr = &proc->mmap_regions;
+    mmap_region_t *region = proc->mmap_regions;
+
+    while (region) {
+        if (region->start == start && region->end == end) {
+            for (uint64_t page = region->start; page < region->end; page += PAGE_SIZE) {
+                uint64_t phys = paging_get_phys(page);
+                if (phys) {
+                    physmem_free_page((void *)phys);
+                    paging_unmap_page(page);
+                }
+            }
+
+            *prev_ptr = region->next;
+            physmem_free_page(region);
+            return 0;
+        }
+        prev_ptr = &region->next;
+        region = region->next;
+    }
+
+    return -EINVAL;
+}
+
+static int64_t wrap_munmap(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    return sys_munmap((void *)a1, (size_t)a2);
+}
+
 void syscall_init(void) {
     memset(syscall_table, 0, sizeof(syscall_table));
 
@@ -401,4 +534,7 @@ void syscall_init(void) {
     syscall_table[SYS_PIPE] = wrap_pipe;
     syscall_table[SYS_DUP2] = wrap_dup2;
     syscall_table[SYS_READDIR] = wrap_readdir;
+    syscall_table[SYS_CHMOD] = wrap_chmod;
+    syscall_table[SYS_MMAP] = wrap_mmap;
+    syscall_table[SYS_MUNMAP] = wrap_munmap;
 }

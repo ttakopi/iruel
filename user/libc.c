@@ -19,6 +19,20 @@
 #define SYS_PIPE        14
 #define SYS_DUP2        15
 #define SYS_READDIR     16
+#define SYS_CHMOD       17
+#define SYS_MMAP        18
+#define SYS_MUNMAP      19
+
+#define PROT_READ       0x1
+#define PROT_WRITE      0x2
+#define PROT_EXEC       0x4
+#define PROT_NONE       0x0
+
+#define MAP_SHARED      0x01
+#define MAP_PRIVATE     0x02
+#define MAP_FIXED       0x10
+#define MAP_ANONYMOUS   0x20
+#define MAP_ANON        MAP_ANONYMOUS
 
 struct utsname {
     char sysname[65];
@@ -67,6 +81,19 @@ static inline int64_t syscall3(int num, uint64_t arg1, uint64_t arg2, uint64_t a
         "int $0x80"
         : "=a"(ret)
         : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline int64_t syscall5(int num, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5) {
+    int64_t ret;
+    register uint64_t r10 __asm__("r10") = arg4;
+    register uint64_t r8 __asm__("r8") = arg5;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3), "r"(r10), "r"(r8)
         : "rcx", "r11", "memory"
     );
     return ret;
@@ -135,6 +162,19 @@ int dup2(int oldfd, int newfd) {
 
 int readdir(int fd, void *dent) {
     return syscall2(SYS_READDIR, fd, (uint64_t)dent);
+}
+
+int chmod(const char *path, unsigned int mode) {
+    return syscall2(SYS_CHMOD, (uint64_t)path, mode);
+}
+
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
+    (void)offset;
+    return (void *)syscall5(SYS_MMAP, (uint64_t)addr, length, prot, flags, fd);
+}
+
+int munmap(void *addr, size_t length) {
+    return syscall2(SYS_MUNMAP, (uint64_t)addr, length);
 }
 
 size_t strlen(const char *s) {

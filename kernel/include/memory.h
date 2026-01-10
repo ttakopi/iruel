@@ -22,6 +22,19 @@
 #define KERNEL_BASE     0xFFFFFFFF80000000UL
 #define USER_STACK_TOP  0x00007FFFFFFFE000UL
 #define USER_HEAP_START 0x0000000010000000UL
+#define USER_MMAP_START 0x0000000040000000UL
+#define USER_MMAP_END   0x0000700000000000UL
+
+#define PROT_READ       0x1
+#define PROT_WRITE      0x2
+#define PROT_EXEC       0x4
+#define PROT_NONE       0x0
+
+#define MAP_SHARED      0x01
+#define MAP_PRIVATE     0x02
+#define MAP_FIXED       0x10
+#define MAP_ANONYMOUS   0x20
+#define MAP_ANON        MAP_ANONYMOUS
 
 void *physmem_alloc_page(void);
 void *physmem_alloc_pages(size_t pages);

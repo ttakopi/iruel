@@ -2,6 +2,7 @@
 #include "include/memory.h"
 #include "include/fs.h"
 #include "include/errno.h"
+#include "include/process.h"
 
 static inode_t *root_inode = NULL;
 
@@ -78,6 +79,10 @@ file_t *vfs_open(const char *path, int flags) {
             if (!dir || dir->type != FT_DIR || !dir->i_ops || !dir->i_ops->create) {
                 return NULL;
             }
+            int perm_err = vfs_check_permission(dir, 2 | 1);
+            if (perm_err < 0) {
+                return NULL;
+            }
             if (dir->i_ops->create(dir, filename, 0644) < 0) {
                 return NULL;
             }
@@ -86,6 +91,16 @@ file_t *vfs_open(const char *path, int flags) {
         if (!inode) {
             return NULL;
         }
+    }
+
+    int access_mode = flags & O_RDWR;
+    int perm_mask = 0;
+    if (access_mode == O_RDONLY || access_mode == O_RDWR) perm_mask |= 4;
+    if (access_mode == O_WRONLY || access_mode == O_RDWR) perm_mask |= 2;
+    
+    int perm_err = vfs_check_permission(inode, perm_mask);
+    if (perm_err < 0) {
+        return NULL;
     }
 
     file_t *file = physmem_alloc_page();
@@ -128,14 +143,20 @@ int vfs_close(file_t *f) {
 int64_t vfs_read(file_t *f, void *buf, size_t count) {
     if (!f || !buf) return -EFAULT;
     if (!f->ops || !f->ops->read) return -ENOSYS;
-
+    
+    int perm_err = vfs_check_permission(f->inode, 4);
+    if (perm_err < 0) return perm_err;
+    
     return f->ops->read(f, buf, count);
 }
 
 int64_t vfs_write(file_t *f, const void *buf, size_t count) {
     if (!f || !buf) return -EFAULT;
     if (!f->ops || !f->ops->write) return -ENOSYS;
-
+    
+    int perm_err = vfs_check_permission(f->inode, 2);
+    if (perm_err < 0) return perm_err;
+    
     return f->ops->write(f, buf, count);
 }
 
@@ -178,4 +199,47 @@ void vfs_set_root(inode_t *root) {
 
 void vfs_init(void) {
     root_inode = NULL;
+}
+
+int vfs_check_permission(inode_t *inode, int mask) {
+    if (!inode) return -ENOENT;
+
+    process_t *proc = process_current();
+    if (!proc) return 0;
+
+    if (proc->uid == 0) {
+        return 0;
+    }
+
+    uint32_t mode = inode->mode;
+    int check_bits = 0;
+
+    if ((uint32_t)proc->uid == inode->uid) {
+        check_bits = (mode >> 6) & 7;
+    } else if ((uint32_t)proc->gid == inode->gid) {
+        check_bits = (mode >> 3) & 7;
+    } else {
+        check_bits = mode & 7;
+    }
+
+    if ((mask & 4) && !(check_bits & 4)) return -EACCES;
+    if ((mask & 2) && !(check_bits & 2)) return -EACCES;
+    if ((mask & 1) && !(check_bits & 1)) return -EACCES;
+
+    return 0;
+}
+
+int vfs_chmod(const char *path, uint32_t mode) {
+    inode_t *inode = vfs_lookup(path);
+    if (!inode) return -ENOENT;
+
+    process_t *proc = process_current();
+    if (!proc) return -ESRCH;
+
+    if (proc->uid != 0 && (uint32_t)proc->uid != inode->uid) {
+        return -EPERM;
+    }
+
+    inode->mode = (inode->mode & S_IFMT) | (mode & 0777);
+    return 0;
 }

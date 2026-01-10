@@ -21,6 +21,26 @@
 #define SEEK_CUR    1
 #define SEEK_END    2
 
+#define S_IFMT      0170000
+#define S_IFREG     0100000
+#define S_IFDIR     0040000
+#define S_IFCHR     0020000
+#define S_IFBLK     0060000
+
+#define S_IRUSR     0000400
+#define S_IWUSR     0000200
+#define S_IXUSR     0000100
+#define S_IRGRP     0000040
+#define S_IWGRP     0000020
+#define S_IXGRP     0000010
+#define S_IROTH     0000004
+#define S_IWOTH     0000002
+#define S_IXOTH     0000001
+
+#define S_IRWXU     (S_IRUSR|S_IWUSR|S_IXUSR)
+#define S_IRWXG     (S_IRGRP|S_IWGRP|S_IXGRP)
+#define S_IRWXO     (S_IROTH|S_IWOTH|S_IXOTH)
+
 #define PATH_MAX    256
 #define NAME_MAX    64
 
@@ -82,6 +102,8 @@ inode_t *vfs_lookup(const char *path);
 void ramfs_init(void);
 inode_t *ramfs_create_file(const char *path, const void *data, size_t size);
 inode_t *ramfs_create_dir(const char *path);
+int vfs_check_permission(inode_t *inode, int mask);
+int vfs_chmod(const char *path, uint32_t mode);
 
 void console_init(void);
 

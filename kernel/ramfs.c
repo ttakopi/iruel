@@ -168,15 +168,15 @@ static int ramfs_add_entry(inode_t *dir, const char *name, inode_t *inode) {
 }
 
 static int ramfs_create(inode_t *dir, const char *name, int mode) {
-    (void)mode;
-
     inode_t *inode = physmem_alloc_page();
     if (!inode) return -ENOMEM;
 
     memset(inode, 0, sizeof(inode_t));
     inode->ino = next_ino++;
     inode->type = FT_FILE;
-    inode->mode = 0644;
+    inode->mode = S_IFREG | (mode & 0777);
+    inode->uid = 0;
+    inode->gid = 0;
     inode->f_ops = &ramfs_file_ops;
 
     ramfs_file_t *rf = (ramfs_file_t *)((uint8_t *)inode + sizeof(inode_t));
@@ -187,15 +187,15 @@ static int ramfs_create(inode_t *dir, const char *name, int mode) {
 }
 
 static int ramfs_mkdir(inode_t *dir, const char *name, int mode) {
-    (void)mode;
-
     inode_t *inode = physmem_alloc_page();
     if (!inode) return -ENOMEM;
 
     memset(inode, 0, sizeof(inode_t));
     inode->ino = next_ino++;
     inode->type = FT_DIR;
-    inode->mode = 0755;
+    inode->mode = S_IFDIR | (mode & 0777);
+    inode->uid = 0;
+    inode->gid = 0;
     inode->f_ops = &ramfs_dir_ops;
 
     ramfs_dir_t *rd = (ramfs_dir_t *)((uint8_t *)inode + sizeof(inode_t));
@@ -229,7 +229,9 @@ static inode_t *ramfs_create_root(void) {
     memset(root, 0, sizeof(inode_t));
     root->ino = next_ino++;
     root->type = FT_DIR;
-    root->mode = 0755;
+    root->mode = S_IFDIR | 0755;
+    root->uid = 0;
+    root->gid = 0;
     root->f_ops = &ramfs_dir_ops;
     root->i_ops = &ramfs_inode_ops;
 
