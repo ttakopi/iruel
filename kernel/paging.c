@@ -116,8 +116,8 @@ void paging_unmap_page(uint64_t virt) {
     invlpg(virt);
 }
 
-uint64_t paging_get_phys(uint64_t virt) {
-    uint64_t *pml4 = kernel_pml4;
+uint64_t paging_get_phys_in_space(uint64_t *pml4, uint64_t virt) {
+    if (!pml4) return 0;
 
     if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return 0;
     uint64_t *pdpt = (uint64_t *)(pml4[PML4_INDEX(virt)] & PAGE_MASK);
@@ -135,6 +135,10 @@ uint64_t paging_get_phys(uint64_t virt) {
     if (!(pt[PT_INDEX(virt)] & PTE_PRESENT)) return 0;
 
     return (pt[PT_INDEX(virt)] & PAGE_MASK) | (virt & 0xFFF);
+}
+
+uint64_t paging_get_phys(uint64_t virt) {
+    return paging_get_phys_in_space(kernel_pml4, virt);
 }
 
 uint64_t *paging_create_address_space(void) {
@@ -222,6 +226,13 @@ uint64_t *paging_clone_address_space(uint64_t *src) {
                         return NULL;
                     }
                     memcpy(page, (void *)phys, PAGE_SIZE);
+                    // Verify the copy by checking first few bytes
+                    if (*(uint32_t *)page != *(uint32_t *)phys) {
+                        kprintf("ERROR: memcpy failed! page=%p phys=%p\n", page, (void *)phys);
+                        kprintf("  page[0]=%x phys[0]=%x\n", *(uint32_t *)page, *(uint32_t *)phys);
+                        paging_destroy_address_space(dst);
+                        return NULL;
+                    }
                     dst_pt[l] = (uint64_t)page | flags;
                 }
             }

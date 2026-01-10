@@ -472,6 +472,12 @@ int process_fork(void) {
     child_ctx->rax = 0;
     child->context = child_ctx;
 
+    kprintf("fork: parent_pid=%d child_pid=%d\n", parent->pid, child->pid);
+    kprintf("  parent: rax=%ld rbx=%ld rip=%p\n",
+            parent->context->rax, parent->context->rbx, (void *)parent->context->rip);
+    kprintf("  child:  rax=%ld rbx=%ld rip=%p\n",
+            child_ctx->rax, child_ctx->rbx, (void *)child_ctx->rip);
+
     for (int i = 0; i < MAX_FDS; i++) {
         if (parent->fds[i].file) {
             child->fds[i].file = parent->fds[i].file;
@@ -482,6 +488,7 @@ int process_fork(void) {
 
     child->state = PROC_READY;
     schedule_make_ready(child);
+
     return child->pid;
 }
 

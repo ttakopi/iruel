@@ -94,6 +94,10 @@ void schedule(void) {
     extern process_t *current_process;
     current_process = next;
 
+    kprintf("switch to pid %d (rip=%p rsp=%p rax=%ld rbx=%ld)\n",
+            next->pid, next->context->rip, next->context->rsp,
+            next->context->rax, next->context->rbx);
+
     paging_switch_address_space(next->page_table);
 
     gdt_set_kernel_stack(next->kernel_stack);

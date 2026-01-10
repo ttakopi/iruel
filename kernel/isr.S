@@ -169,6 +169,7 @@ irq_common:
     iretq
 
 syscall_entry:
+    cli
 
     pushq %rax
     pushq %rbx

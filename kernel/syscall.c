@@ -31,21 +31,7 @@ int sys_exit(int status) {
 }
 
 int sys_fork(void) {
-    process_t *proc = process_current();
-    cpu_context_t saved;
-    int have_saved = 0;
-    if (proc && proc->context) {
-        saved = *proc->context;
-        have_saved = 1;
-    }
-
-    int pid = process_fork();
-
-    if (have_saved && proc && proc->context) {
-        *proc->context = saved;
-    }
-
-    return pid;
+    return process_fork();
 }
 
 int64_t sys_read(int fd, void *buf, size_t count) {
